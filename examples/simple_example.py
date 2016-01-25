@@ -13,3 +13,4 @@ client.get("SELECT * FROM hello",["hi"],"hello")
 #OR
 #We can get everything in the db
 client.get_all()
+

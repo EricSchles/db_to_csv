@@ -4,6 +4,7 @@ import shutil
 import os
 import time
 import math
+import pickle
 
 class Client:
     def __init__(self,db,config_file):
@@ -12,14 +13,10 @@ class Client:
         self.config_file = config_file
         
     def get_next(self,cur):
-        fetch = None
-        while not fetch:
-            try:
-                fetch = cur.fetchone()
-                break
-            except sqlalchemy.exc.DatabaseError:
-                time.sleep(30)
-                print "db still down"
+        try:
+            fetch = cur.fetchone()    
+        except sqlalchemy.exc.DatabaseError:
+            return "restart"
         return fetch
 
     def get_all(self):
@@ -27,31 +24,47 @@ class Client:
         for table_name in tables.keys():
             sql_statement = "SELECT * FROM "+table_name
             self.get(sql_statement,tables[table_name],table_name,get_all=True)
+
+    def save(self,counter,table_counter,table_name,df,list_of_existing_ids):
+        pickle.dump(list_of_existing_ids,open("list_of_existing_ids.pickle","w"))
+        df.to_csv("cached_"+table_name+"_table.csv")
+        counter += 1
+        if counter%100 == 0:
+            shutil.copy("cached_"+table_name+"_table.csv",str(table_counter)+table_name+"_table.csv")
+        if counter%1000 == 0:
+            table_counter+=1
+            print "New csv started!"
+        return counter,table_counter
+
+    def reset(self):
+        pickle.dump([],open("list_of_existing_ids.pickle","w"))
         
-    def get(self,sql_statement,table_columns,table_name,get_all=False):
-        if not get_all:
-            if not "order by" in sql_statement.lower():
-                return "Failed - ORDER BY not in SQL statement and is required because database is not fault tolerant"
-        cur = self.con.execute(sql_statement)
-        fetch = cur.fetchone()
-        df = pd.DataFrame()
+    def get(self,sql_statement,table_columns,table_name,id_index,get_all=False):
         counter = 0
         table_counter = 1
+        list_of_existing_ids = pickle.load(open("list_of_existing_ids.pickle","r"))
+        df = pd.DataFrame()
+        if not get_all:
+            if not "order by" in sql_statement.lower():
+                raise NameError("Failed - ORDER BY not in SQL statement and is required because database is not fault tolerant")        
+        cur = self.con.execute(sql_statement)
+        fetch = cur.fetchone()
         while fetch:
             tmp = {}
             vals = fetch
-            for ind,header in enumerate(table_columns):
-                tmp[header] = vals[ind]
-            df = df.append(tmp,ignore_index=True)
-            fetch = self.get_next(cur)
-            df.to_csv("cached_"+table_name+"_table.csv")
-            counter += 1
-            if counter%100 == 0:
-                shutil.copy("cached_"+table_name+"_table.csv",str(table_counter)+table_name+"_table.csv")
-            if counter%1000 == 0:
-                table_counter+=1
-                print "New csv started!"
-
+            if not vals[id_index] in list_of_existing_ids:
+                list_of_existing_ids.append(vals[id_index])
+                for ind,header in enumerate(table_columns):
+                    tmp[header] = vals[ind]
+                df = df.append(tmp,ignore_index=True)
+                counter,table_counter = self.save(counter,table_counter,table_name,df,list_of_existing_ids)
+                fetch = self.get_next(cur)
+                if fetch == "restart":
+                    return True
+            else:
+                counter += 1
+                fetch = cur.fetchone()
+        
     def is_nan(self,record):
         if type(record) != type(str()):
             return math.isnan(record)
